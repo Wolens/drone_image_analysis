@@ -3,83 +3,79 @@ import os
 import time
 import math
 
-# Параметры полета (измените по своему усмотрению)
+# --- Настройки ---
 TARGET_X = 240.10
 TARGET_Y = 63.3
-TARGET_Z = -33.60  # Высота (отрицательная, как обычно в AirSim)
-VELOCITY = 10  # Скорость движения (метры в секунду) - Снижена
-OFFSET_Z = 1.2  # Добавочная высота для съемки
+TARGET_Z = -33.60
+VELOCITY = 10
+OFFSET_Z = 1.2
 BOTTOM_CAMERA = "3"
-
-# Количество снимков, которые нужно сделать
 NUM_SNAPSHOTS = 10
 
-# Подключение к AirSim
-client = airsim.MultirotorClient()
-client.confirmConnection()
-client.enableApiControl(True)
-client.armDisarm(True)
 
-# Взлет
-client.takeoffAsync().join()
+# --- Функции для работы с AirSim ---
 
-# Текущая позиция дрона
-current_pose = client.simGetVehiclePose()
-current_x = current_pose.position.x_val
-current_y = current_pose.position.y_val
-current_z = current_pose.position.z_val
+def connect_to_airsim():
+    """Подключается к AirSim и выполняет базовые настройки."""
+    client = airsim.MultirotorClient()
+    client.confirmConnection()
+    client.enableApiControl(True)
+    client.armDisarm(True)
+    return client
 
-# Поднимаем дрон на нужную высоту
-target_altitude = TARGET_Z + OFFSET_Z
-print(f"Moving vertically to altitude: {target_altitude}")
-client.moveToPositionAsync(
-    current_x, current_y, target_altitude, VELOCITY,
-    timeout_sec=10).join()
 
-# Вычисляем расстояние до целевой точки по горизонтали
-distance_to_target = math.sqrt(
-    (TARGET_X - current_x)**2 + (TARGET_Y - current_y)**2)
-
-# Вычисляем время полета (только горизонтальное движение)
-flight_time = distance_to_target / VELOCITY
-
-# Вычисляем интервал времени между снимками
-time_interval = flight_time / NUM_SNAPSHOTS
-
-# Создаем директорию "output" в текущей директории скрипта,
-# если она не существует
-output_dir = os.path.join(os.getcwd(), "output")
-if not os.path.exists(output_dir):
-    os.makedirs(output_dir)
-
-# Цикл для перемещения и захвата снимков
-for i in range(NUM_SNAPSHOTS):
-    # Вычисляем целевую позицию для текущего шага
-    step_x = current_x + (TARGET_X - current_x) * (i + 1) / NUM_SNAPSHOTS
-    step_y = current_y + (TARGET_Y - current_y) * (i + 1) / NUM_SNAPSHOTS
-    step_z = target_altitude  # Высота остается постоянной
-
-    # Перемещаем дрон к целевой позиции для текущего шага
-    print(f"Moving to: X={step_x}, Y={step_y}, Z={step_z}")
+def takeoff_and_move_to_altitude(client, altitude):
+    """Взлетает и поднимает дрон на заданную высоту."""
+    client.takeoffAsync().join()
+    current_pose = client.simGetVehiclePose()
+    current_x = current_pose.position.x_val
+    current_y = current_pose.position.y_val
+    print(f"Moving vertically to altitude: {altitude}")
     client.moveToPositionAsync(
-        step_x, step_y, step_z, VELOCITY, timeout_sec=10,
+        current_x, current_y, altitude, VELOCITY,
+        timeout_sec=10).join()
+
+
+def calculate_flight_parameters(client):
+    """Вычисляет параметры полета (расстояние, время, интервал)."""
+    current_pose = client.simGetVehiclePose()
+    current_x = current_pose.position.x_val
+    current_y = current_pose.position.y_val
+    distance_to_target = math.sqrt(
+        (TARGET_X - current_x)**2 + (TARGET_Y - current_y)**2)
+    flight_time = distance_to_target / VELOCITY
+    time_interval = flight_time / NUM_SNAPSHOTS
+    return current_x, current_y, distance_to_target, time_interval
+
+
+def move_to_snapshot_position(client, current_x, current_y,
+                             target_altitude, snapshot_index,
+                             num_snapshots):
+    """Перемещает дрон к позиции для захвата снимка."""
+    step_x = current_x + (TARGET_X - current_x) * (snapshot_index + 1) / num_snapshots
+    step_y = current_y + (TARGET_Y - current_y) * (snapshot_index + 1) / num_snapshots
+    print(f"Moving to: X={step_x}, Y={step_y}, Z={target_altitude}")
+    client.moveToPositionAsync(
+        step_x, step_y, target_altitude, VELOCITY,
+        timeout_sec=10,
         drivetrain=airsim.DrivetrainType.ForwardOnly,
         yaw_mode=airsim.YawMode(False, 0)).join()
+    return step_x, step_y
 
-    # Запрос изображений
+
+def capture_and_save_images(client, snapshot_index, output_dir):
+    """Захватывает и сохраняет изображения."""
     responses = client.simGetImages([
         airsim.ImageRequest(BOTTOM_CAMERA, airsim.ImageType.DepthVis),
         airsim.ImageRequest("1", airsim.ImageType.DepthPlanar, True)])
-
-    print(f'Retrieved images for snapshot {i+1}: {len(responses)}')
-
-    # Обработка изображений
+    print(f'Retrieved images for snapshot {snapshot_index+1}:'
+          f' {len(responses)}')
     for j, response in enumerate(responses):
         if response.image_type == airsim.ImageType.DepthVis:
             print("DepthVis: Type %d, size %d" %
                   (response.image_type, len(response.image_data_uint8)))
             filepath = os.path.join(
-                output_dir, f'py_depthvis_{i+1}_{j}.png')
+                output_dir, f'py_depthvis_{snapshot_index+1}_{j}.png')
             airsim.write_file(
                 os.path.normpath(filepath),
                 response.image_data_uint8
@@ -88,7 +84,7 @@ for i in range(NUM_SNAPSHOTS):
             print("DepthPlanar: Type %d, size %d" %
                   (response.image_type, len(response.image_data_float)))
             filepath = os.path.join(
-                output_dir, f'py_depthplanar_{i+1}_{j}.pfm')
+                output_dir, f'py_depthplanar_{snapshot_index+1}_{j}.pfm')
             airsim.write_pfm(
                 os.path.normpath(filepath),
                 airsim.get_pfm_array(response)
@@ -96,23 +92,53 @@ for i in range(NUM_SNAPSHOTS):
         else:
             print("Unknown image type %d" % response.image_type)
 
-    # Обновляем текущую позицию дрона (для следующего шага)
-    current_x = step_x
-    current_y = step_y
 
-# Финальное перемещение в точку назначения (уже на нужной высоте)
-print(f"Moving to final target: X={TARGET_X}, Y={TARGET_Y}, "
-      f"Z={target_altitude}")
-client.moveToPositionAsync(
-    TARGET_X, TARGET_Y, target_altitude, VELOCITY, timeout_sec=10,
-    drivetrain=airsim.DrivetrainType.ForwardOnly,
-    yaw_mode=airsim.YawMode(False, 0)).join()
+def move_to_target(client, target_altitude):
+    """Перемещает дрон в финальную целевую точку."""
+    print(f"Moving to final target: X={TARGET_X}, Y={TARGET_Y}, "
+          f"Z={target_altitude}")
+    client.moveToPositionAsync(
+        TARGET_X, TARGET_Y, target_altitude, VELOCITY,
+        timeout_sec=10,
+        drivetrain=airsim.DrivetrainType.ForwardOnly,
+        yaw_mode=airsim.YawMode(False, 0)).join()
 
-# Ожидаем несколько секунд, чтобы дрон стабилизировался на месте
-time.sleep(5)
 
-# После завершения полета, приземляемся и выключаем API контроль
-client.landAsync().join()
-client.armDisarm(False)
-client.enableApiControl(False)
-print("Done!")
+def land_and_disarm(client):
+    """Приземляет дрон и отключает управление."""
+    time.sleep(5) # Wait to stablize
+    client.landAsync().join()
+    client.armDisarm(False)
+    client.enableApiControl(False)
+    print("Done!")
+
+
+def create_output_directory():
+    """Создает директорию для сохранения изображений."""
+    output_dir = os.path.join(os.getcwd(), "output")
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    return output_dir
+
+
+# --- Основной код ---
+if __name__ == "__main__":
+    try:
+        client = connect_to_airsim()
+        output_dir = create_output_directory()
+        target_altitude = TARGET_Z + OFFSET_Z
+        takeoff_and_move_to_altitude(client, target_altitude)
+        current_x, current_y, distance_to_target, time_interval = (
+            calculate_flight_parameters(client))
+
+        for i in range(NUM_SNAPSHOTS):
+            current_x, current_y = move_to_snapshot_position(
+                client, current_x, current_y, target_altitude, i,
+                NUM_SNAPSHOTS)
+            capture_and_save_images(client, i, output_dir)
+        move_to_target(client, target_altitude)
+    except Exception as e:
+        print(f"An error occurred: {e}")
+    finally:
+        if 'client' in locals():  # Ensure client is defined before using it
+            land_and_disarm(client)
