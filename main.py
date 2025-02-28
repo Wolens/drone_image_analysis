@@ -4,10 +4,10 @@ import time
 import math
 
 # --- Настройки ---
-TARGET_X = 240.10
-TARGET_Y = 63.3
-TARGET_Z = -33.60
-VELOCITY = 10
+TARGET_X = -32
+TARGET_Y = 4
+TARGET_Z = -30
+VELOCITY = 5
 OFFSET_Z = 1.2
 BOTTOM_CAMERA = "3"
 NUM_SNAPSHOTS = 10
