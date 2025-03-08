@@ -12,8 +12,8 @@ def find_location(current_image_path, photo_data, output_dir="matches"):
     os.makedirs(output_dir, exist_ok=True)
 
     current_img = cv2.imread(current_image_path, cv2.IMREAD_GRAYSCALE)
-    if current_i:
-        print(f"Error: Coulmg is Noned not read image at {current_image_path}")
+    if current_img is None:
+        print(f"Error: Could not read image at {current_image_path}")
         return None, 0
 
     best_match = None
@@ -52,7 +52,7 @@ def find_location(current_image_path, photo_data, output_dir="matches"):
             continue
 
         # Порог расстояния (экспериментируйте со значением)
-        distance_threshold = 50  # Примерное значение.  
+        distance_threshold = 50  # Примерное значение.  Подберите подходящее для ваших изображений
 
         # Отбираем только хорошие совпадения по порогу расстояния
         good_matches = [m for m in matches if m.distance < distance_threshold]
@@ -66,11 +66,15 @@ def find_location(current_image_path, photo_data, output_dir="matches"):
             best_match_count = len(good_matches)
 
     if best_match:
-        print(f"Best match found: {best_match['filename']} with score {best_score}")
-        print(f"Number of good matches: {best_match_count}")
+        print(f"Найдено лучшее совпадение: {best_match['filename']} со счетом {best_score}")
+        print(f"Количество хороших совпадений: {best_match_count}")
 
-        # Рисуем совпадения (опционально, для визуализации)
+        map_img = cv2.imread(best_match['filename'], cv2.IMREAD_GRAYSCALE) # Загружаем в оттенках серого для вычисления ключевых точек
+        keypoints_map, descriptors_map = orb.detectAndCompute(map_img, None) # Вычисляем ключевые точки заново!
+
+        # Загружаем в цвете для отрисовки
         map_img = cv2.imread(best_match['filename'])
+
         img_matches = cv2.drawMatches(current_img, keypoints_current, map_img, keypoints_map, good_matches, None, flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
         cv2.imwrite(os.path.join(output_dir, f"matches_{os.path.basename(current_image_path)}_{os.path.basename(best_match['filename'])}.jpg"), img_matches)
 

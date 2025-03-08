@@ -74,7 +74,6 @@ def get_current_position(client, photo_data, output_dir, compare_all=False):
         print("Error: No image retrieved")
         return None
 
-
 # Подключение к AirSim
 client = airsim.MultirotorClient()
 client.confirmConnection()
