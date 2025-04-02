@@ -3,93 +3,119 @@ import os
 import time
 import json
 import cv2  # Используем OpenCV
-import numpy as np
+import numpy as np  # Для работы с массивами
 
-# Настройки
-GRID_SIZE = 10
+# --- НАСТРОЙКИ ---
+GRID_SIZE = 20  # Увеличиваем количество фотографий
 ALTITUDE = -35
 VELOCITY = 7
 OVERLAP = 0.5
 OUTPUT_DIR = "output_photo_map"
 JSON_FILENAME = "photo_map.json"
 
-# Подключение к AirSim
+# Расширяем территорию в 2 раза
+INITIAL_MIN_X = -100
+INITIAL_MIN_Y = -16.5
+INITIAL_MAX_X = -12.2
+INITIAL_MAX_Y = 15.7
+
+EXPANSION_FACTOR = 2
+CENTER_X = (INITIAL_MIN_X + INITIAL_MAX_X) / 2
+CENTER_Y = (INITIAL_MIN_Y + INITIAL_MAX_Y) / 2
+HALF_WIDTH = (INITIAL_MAX_X - INITIAL_MIN_X) / 2 * EXPANSION_FACTOR
+HALF_HEIGHT = (INITIAL_MAX_Y - INITIAL_MIN_Y) / 2 * EXPANSION_FACTOR
+
+min_x = CENTER_X - HALF_WIDTH
+min_y = CENTER_Y - HALF_HEIGHT
+max_x = CENTER_X + HALF_WIDTH
+max_y = CENTER_Y + HALF_HEIGHT
+
+print(f"Границы области съемки: min_x={min_x}, min_y={min_y}, max_x={max_x}, max_y={max_y}")
+
+# --- ПОДКЛЮЧЕНИЕ К AIRSIM ---
 client = airsim.MultirotorClient()
 client.confirmConnection()
 client.enableApiControl(True)
 client.armDisarm(True)
 client.takeoffAsync().join()
 
-# Вычисляем координаты углов области съемки
-min_x = -100
-min_y = -16.5
-max_x = -12.2
-max_y = 15.7
+# --- ВЗЛЕТ НА ЗАДАННУЮ ВЫСОТУ ---
+print(f"Взлет на высоту {ALTITUDE} метров...")
+client.moveToPositionAsync(0, 0, ALTITUDE, VELOCITY).join()  # Взлетаем в точке (0, 0) на нужную высоту
+time.sleep(2) # Даем дрону время стабилизироваться после взлета
 
-# Вычисляем интервал между снимками с учетом перекрытия
-x_interval = (max_x - min_x) / (GRID_SIZE - 1) # * (1 - OVERLAP)
-y_interval = (max_y - min_y) / (GRID_SIZE - 1) # * (1 - OVERLAP)
+# --- ВЫЧИСЛЕНИЕ ИНТЕРВАЛОВ ---
+x_interval = (max_x - min_x) / (GRID_SIZE - 1) * (1 - OVERLAP)
+y_interval = (max_y - min_y) / (GRID_SIZE - 1) * (1 - OVERLAP)
 
-# Создаем папку для сохранения снимков, если она не существует
+# --- СОЗДАНИЕ ДИРЕКТОРИИ ---
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# Создаем список для хранения данных
-photo_data = []
+# --- ОСНОВНОЙ ЦИКЛ СЪЕМКИ ---
+photo_data = []  # Список для хранения метаданных
+try:
+    for i in range(GRID_SIZE):
+        for j in range(GRID_SIZE):
+            x = min_x + i * x_interval
+            y = min_y + j * y_interval
 
-# Летаем по сетке и делаем снимки
-for i in range(GRID_SIZE):
-    for j in range(GRID_SIZE):
-        x = min_x + i * x_interval
-        y = min_y + j * y_interval
+            print(f"Перемещение в точку: x={x}, y={y}")
+            client.moveToPositionAsync(x, y, ALTITUDE, VELOCITY).join() # Летим на высоте к нужной точке
+            time.sleep(0.5)  # Даем дрону время стабилизироваться
 
-        # Перемещаемся в точку съемки
-        client.moveToPositionAsync(x, y, ALTITUDE, VELOCITY).join()  # Исправлено!
-        time.sleep(0.5)  # Даем время стабилизироваться
+            # --- ЗАПРОС ИЗОБРАЖЕНИЯ ---
+            responses = client.simGetImages([
+                airsim.ImageRequest("3", airsim.ImageType.Scene, False, False)
+            ])
 
-        # Делаем снимок
-        responses = client.simGetImages([
-            airsim.ImageRequest("3", airsim.ImageType.Scene, False, False)])
-        if len(responses) > 0:
-            response = responses[0]
-            if len(response.image_data_uint8) == 0:
-                print("Error: Image data is empty!")
-                continue  # Перейти к следующей итерации цикла
+            if responses and len(responses) > 0:
+                response = responses[0]
+                if len(response.image_data_uint8) == 0:
+                    print("Ошибка: данные изображения пусты!")
+                    continue  # Переходим к следующей итерации
 
-            # Преобразуем данные изображения в массив NumPy и сохраняем с помощью OpenCV
-            img_rgb = np.frombuffer(response.image_data_uint8, dtype=np.uint8)
-            img_rgb = img_rgb.reshape(response.height, response.width, 3)  #Исправлено
-            filename = os.path.join(OUTPUT_DIR, f"img_{i}_{j}.png")
-            img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
-            cv2.imwrite(filename, img_bgr)  #Исправлено
-            print(f"Saved image: {filename}")
+                # --- ОБРАБОТКА ИЗОБРАЖЕНИЯ ---
+                img_rgb = np.frombuffer(response.image_data_uint8, dtype=np.uint8)
+                img_rgb = img_rgb.reshape(response.height, response.width, 3)
+                img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)  # Convert to BGR for OpenCV
+                filename = os.path.join(OUTPUT_DIR, f"img_{i}_{j}.png")
+                cv2.imwrite(filename, img_bgr)  # Save the BGR image
+                print(f"Сохранено изображение: {filename}")
 
-            # Получаем состояние дрона для ориентации
-            state = client.getMultirotorState()
-            orientation = state.kinematics_estimated.orientation
+                # --- ПОЛУЧЕНИЕ ДАННЫХ ОРИЕНТАЦИИ ---
+                state = client.getMultirotorState()
+                orientation = state.kinematics_estimated.orientation
 
-            # Сохраняем метаданные в словарь
-            photo_info = {
-                'filename': filename,
-                'x': x,
-                'y': y,
-                'orientation': {
-                    'w': orientation.w_val,
-                    'x': orientation.x_val,
-                    'y': orientation.y_val,
-                    'z': orientation.z_val
+                # --- СОХРАНЕНИЕ МЕТАДАННЫХ ---
+                photo_info = {
+                    'filename': filename,
+                    'x': x,
+                    'y': y,
+                    'orientation': {
+                        'w': orientation.w_val,
+                        'x': orientation.x_val,
+                        'y': orientation.y_val,
+                        'z': orientation.z_val
+                    }
                 }
-            }
-            photo_data.append(photo_info)
-        else:
-            print("Error: No image retrieved")
+                photo_data.append(photo_info)
+            else:
+                print("Ошибка: изображение не получено")
 
-# После завершения полета, приземляемся
-client.landAsync().join()
-client.armDisarm(False)
-client.enableApiControl(False)
+except Exception as e:
+    print(f"Произошла ошибка во время полета: {e}")
 
-# Записываем данные в JSON файл *ОДИН РАЗ* после цикла
-with open(os.path.join(OUTPUT_DIR, JSON_FILENAME), 'w') as jsonfile:
-    json.dump(photo_data, jsonfile, indent=4)
+finally:
+    # --- ЗАВЕРШЕНИЕ ПОЛЕТА ---
+    print("Посадка...")
+    client.landAsync().join()
+    client.armDisarm(False)
+    client.enableApiControl(False)
 
-print("Done!")
+    # --- ЗАПИСЬ ДАННЫХ В JSON ---
+    json_path = os.path.join(OUTPUT_DIR, JSON_FILENAME)
+    with open(json_path, 'w') as jsonfile:
+        json.dump(photo_data, jsonfile, indent=4)
+    print(f"Метаданные сохранены в: {json_path}")
+
+    print("Готово!")
