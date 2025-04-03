@@ -5,12 +5,12 @@ import cv2
 import time
 import json
 import random
-import airsim  # Убедитесь, что airsim установлен
+import airsim  
 import math
 
 # Настройки
 ALTITUDE = -35
-VELOCITY = 7
+#VELOCITY = 7 # Адаптивная скорость будет использоваться
 OUTPUT_DIR = "current_photo"
 PHOTO_MAP_DIR = "output_photo_map"
 JSON_FILENAME = "photo_map.json"
@@ -21,7 +21,7 @@ min_y = -32.6
 max_x = 31.7
 max_y = 31.8
 
-# Калибровочные значения (требуется точная настройка!)
+# Калибровочные значения 
 pixels_per_meter_x = 10  # Примерное значение: 10 пикселей на метр по оси X
 pixels_per_meter_y = 10  # Примерное значение: 10 пикселей на метр по оси Y
 
@@ -94,7 +94,7 @@ def find_location(current_image_path, photo_data, output_dir="matches"):
             continue
 
         # Порог расстояния (экспериментируйте со значением)
-        distance_threshold = 50  # Примерное значение.  Подберите подходящее для ваших изображений
+        distance_threshold = 50  # Примерное значение.
 
         # Отбираем только хорошие совпадения по порогу расстояния
         good_matches = [m for m in matches if m.distance < distance_threshold]
@@ -248,13 +248,13 @@ try:
         photo_data = json.load(jsonfile)
 
     # Инициализация:  Перемещаемся в начальную точку
-    # Определите начальную точку
+    # Определяем начальную точку
     start_x = min_x
     start_y = min_y
 
-    # Переместите дрон в начальную точку
+    # Перемещаем дрон в начальную точку
     print(f"Перемещаемся в начальную точку: x={start_x}, y={start_y}")
-    client.moveToPositionAsync(start_x, start_y, ALTITUDE, VELOCITY).join()
+    client.moveToPositionAsync(start_x, start_y, ALTITUDE, 5).join()
     time.sleep(2)  # Дайте дрону время стабилизироваться
 
     # Логирование:  Проверяем, какие изображения соответствуют начальной точке
@@ -268,96 +268,104 @@ try:
         exit()
     current_x, current_y = position
 
-    # Цикл навигации
-    max_iterations = 50  # Ограничение на количество итераций
+    # Параметры управления полетом
+    TARGET_TOLERANCE = 1.0  # Допустимое расстояние до цели (в метрах)
+    MAX_SPEED = 3.0         # Максимальная скорость
+    KALMAN_GAIN = 0.5       # Коэффициент фильтра Калмана
+
     iteration = 0
-    estimated_x = current_x  # Начальная оценка
+    estimated_x = current_x
     estimated_y = current_y
 
-    while iteration < max_iterations:
+    while iteration < 80:  # max_iterations = 80:
         iteration += 1
         print(f"Итерация {iteration}:")
 
         # 1. Получаем текущее положение (комп. зрение)
         position = get_current_position(client, photo_data, OUTPUT_DIR)
         if position is None:
-            print("Не удалось определить положение. Прерываем навигацию.")
-            break
+            print("Не удалось определить положение. Повторная попытка...")
+            time.sleep(1)  # Пауза перед повторной попыткой
+            continue  # Переходим к следующей итерации
+
         current_x, current_y = position
 
-        # 2.  Фильтр Калмана
-        kalman_gain = 0.5  # Подберите значение (от 0 до 1). Чем больше, тем больше доверия к новым измерениям
-        estimated_x = estimated_x + kalman_gain * (current_x - estimated_x)
-        estimated_y = estimated_y + kalman_gain * (current_y - estimated_y)
-
+        # 2. Фильтр Калмана
+        estimated_x = estimated_x + KALMAN_GAIN * (current_x - estimated_x)
+        estimated_y = estimated_y + KALMAN_GAIN * (current_y - estimated_y)
 
         # 3. Получаем реальное положение из AirSim
-        real_position = client.getMultirotorState().kinematics_estimated.position
+        real_position = client.simGetVehiclePose().position
         real_x = real_position.x_val
         real_y = real_position.y_val
-        print(f"Реальное положение: x={real_x:.2f}, y={real_y:.2f}") # Добавлено
+        print(f"Реальное положение: x={real_x:.2f}, y={real_y:.2f}")
 
         # 4. Добавляем данные в списки для графиков
         real_x_coords.append(real_x)
         real_y_coords.append(real_y)
-        vision_x_coords.append(estimated_x) # Use estimated values for the graph
+        vision_x_coords.append(estimated_x)
         vision_y_coords.append(estimated_y)
 
-        # 5. Вычисляем расстояние до цели по каждой оси
-        delta_x = target_x - estimated_x
-        delta_y = target_y - estimated_y
-        # distance_to_target = (delta_x**2 + delta_y**2)**0.5  # Больше не нужно общее расстояние
+        # 5. Вычисляем расстояние до цели
+        distance_to_target = math.sqrt((target_x - estimated_x)**2 + (target_y - estimated_y)**2)
 
-        # 6. Вычисляем отдельные шаги для X и Y
-        step_size_x = min(abs(delta_x), 1)  # Максимальный шаг по X = 1
-        step_size_y = min(abs(delta_y), 1)  # Максимальный шаг по Y = 1
-
-        # Вычисляем перемещение по X и Y
-        move_x = estimated_x + step_size_x * np.sign(delta_x)  # Используем знак delta_x
-        move_y = estimated_y + step_size_y * np.sign(delta_y)  # Используем знак delta_y
-
-        print(f"Перемещаемся на: x={move_x:.2f}, y={move_y:.2f}")
-
-        # 7. Отправляем команду перемещения (асинхронно)
-        client.moveToPositionAsync(move_x, move_y, ALTITUDE, VELOCITY)  # Убрали .join()
-
-        # 8. Ждем 1 секунду
-        time.sleep(1)
-
-        # 9. Вычисляем расстояние до цели
-        distance_to_target = (delta_x**2 + delta_y**2)**0.5
-        print(f"Расстояние до цели: {distance_to_target:.2f}")  # Добавлено
-
-        if distance_to_target < 1:  # Если расстояние до цели меньше 1, считаем, что достигли
+        # 6. Проверяем, достигнута ли цель
+        if distance_to_target < TARGET_TOLERANCE:
             print("Цель достигнута!")
             break
+
+        # 7. Вычисляем скорость (адаптивная)
+        velocity = min(MAX_SPEED, distance_to_target)
+
+        # 8. Вычисляем вектор перемещения (нормализованный)
+        delta_x = target_x - estimated_x
+        delta_y = target_y - estimated_y
+        if distance_to_target > 0:
+            direction_x = delta_x / distance_to_target
+            direction_y = delta_y / distance_to_target
+        else:
+            direction_x = 0
+            direction_y = 0
+
+        # 9. Вычисляем компоненты перемещения
+        move_x = estimated_x + direction_x * velocity
+        move_y = estimated_y + direction_y * velocity
+
+        print(f"Перемещаемся на: x={move_x:.2f}, y={move_y:.2f}, со скоростью: {velocity:.2f}")
+
+        # 10. Отправляем команду перемещения (асинхронно) и ждем завершения
+        client.moveToPositionAsync(move_x, move_y, ALTITUDE, velocity).join() # Важно: ждем завершения!
+
+        # 11. Задержка (важно!)
+        time.sleep(0.1) #  Небольшая задержка для стабилизации
 
 except Exception as e:
     print(f"Произошла ошибка: {e}")
 finally:
-    # После завершения полета, приземляемся
+    print("Завершение программы...")
     client.landAsync().join()
     client.armDisarm(False)
     client.enableApiControl(False)
 
-    # Создаем графики
-    plt.figure(figsize=(12, 6))
+    # Создаем один график
+    plt.figure(figsize=(12, 6))  # Увеличим размер графика, чтобы лучше видеть
 
-    plt.subplot(1, 2, 1)
-    plt.plot(real_x_coords, label="Реальная координата X (AirSim)")
-    plt.plot(vision_x_coords, label="Координата X (комп. зрение)")
-    plt.xlabel("Итерация")
-    plt.ylabel("Координата X")
+    # Рисуем реальную траекторию
+    plt.plot(real_x_coords, real_y_coords, label='Реальная траектория', color='blue')  # Явно задаем цвет
+
+    # Рисуем траекторию компьютерного зрения
+    plt.plot(vision_x_coords, vision_y_coords, label='Траектория (комп. зрение)', color='green') # Явно задаем цвет
+
+    # Рисуем цель (один раз достаточно)
+    plt.scatter(target_x, target_y, color='red', marker='x', label='Цель')
+
+    # Настраиваем график
+    plt.xlabel('X координата')
+    plt.ylabel('Y координата')
+    plt.title('Траектории дрона')  # Общее название
     plt.legend()
-    plt.title("Сравнение координаты X")
+    plt.grid(True)
 
-    plt.subplot(1, 2, 2)
-    plt.plot(real_y_coords, label="Реальная координата Y (AirSim)")
-    plt.plot(vision_y_coords, label="Координата Y (комп. зрение)")
-    plt.xlabel("Итерация")
-    plt.ylabel("Координата Y")
-    plt.legend()
-    plt.title("Сравнение координаты Y")
-
-    plt.tight_layout()  # Чтобы графики не накладывались друг на друга
+    # Отображаем график
+    plt.tight_layout() # Важно, чтобы надписи не накладывались
     plt.show()
