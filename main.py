@@ -7,6 +7,7 @@ import json
 import random
 import airsim  
 import math
+import time
 
 # Настройки
 ALTITUDE = -35
@@ -222,6 +223,7 @@ real_x_coords = []
 real_y_coords = []
 vision_x_coords = []
 vision_y_coords = []
+rmse_values = []  # Список для хранения значений RMSE
 
 # Границы карты местности
 min_x = -143.9
@@ -277,7 +279,10 @@ try:
     estimated_x = current_x
     estimated_y = current_y
 
-    while iteration < 80:  # max_iterations = 80:
+    # Засекаем время начала полета
+    start_time = time.time()
+
+    while iteration < 200:  # max_iterations = 80:
         iteration += 1
         print(f"Итерация {iteration}:")
 
@@ -305,6 +310,11 @@ try:
         real_y_coords.append(real_y)
         vision_x_coords.append(estimated_x)
         vision_y_coords.append(estimated_y)
+
+        # 5. Вычисляем RMSE
+        rmse = math.sqrt((estimated_x - real_x) ** 2 + (estimated_y - real_y) ** 2)
+        rmse_values.append(rmse)
+        print(f"RMSE: {rmse:.2f}")
 
         # 5. Вычисляем расстояние до цели
         distance_to_target = math.sqrt((target_x - estimated_x)**2 + (target_y - estimated_y)**2)
@@ -337,35 +347,53 @@ try:
         client.moveToPositionAsync(move_x, move_y, ALTITUDE, velocity).join() # Важно: ждем завершения!
 
         # 11. Задержка (важно!)
-        time.sleep(0.1) #  Небольшая задержка для стабилизации
+        time.sleep(0.1)  #  Небольшая задержка для стабилизации
 
 except Exception as e:
     print(f"Произошла ошибка: {e}")
 finally:
+    # Засекаем время окончания полета
+    end_time = time.time()
+
+    # Вычисляем время полета в минутах
+    flight_time_seconds = end_time - start_time
+    flight_time_minutes = flight_time_seconds / 60
+
     print("Завершение программы...")
     client.landAsync().join()
     client.armDisarm(False)
     client.enableApiControl(False)
 
-    # Создаем один график
-    plt.figure(figsize=(12, 6))  # Увеличим размер графика, чтобы лучше видеть
+    # Вычисляем погрешность прибытия
+    final_real_position = client.simGetVehiclePose().position
+    error_x = target_x - final_real_position.x_val
+    error_y = target_y - final_real_position.y_val
+    print(f"Погрешность прибытия: x={error_x:.2f}, y={error_y:.2f}")
 
-    # Рисуем реальную траекторию
-    plt.plot(real_x_coords, real_y_coords, label='Реальная траектория', color='blue')  # Явно задаем цвет
+    print(f"Время полета: {flight_time_minutes:.2f} минут")
+    print(f"Количество итераций: {iteration}")
 
-    # Рисуем траекторию компьютерного зрения
-    plt.plot(vision_x_coords, vision_y_coords, label='Траектория (комп. зрение)', color='green') # Явно задаем цвет
+    # Создаем несколько графиков в одном окне
+    fig, axs = plt.subplots(2, 1, figsize=(12, 12))  # 2 строки, 1 столбец
 
-    # Рисуем цель (один раз достаточно)
-    plt.scatter(target_x, target_y, color='red', marker='x', label='Цель')
+    # График траекторий
+    axs[0].plot(real_x_coords, real_y_coords, label='Реальная траектория', color='blue')
+    axs[0].plot(vision_x_coords, vision_y_coords, label='Траектория (комп. зрение)', color='green')
+    axs[0].scatter(target_x, target_y, color='red', marker='x', label='Цель')
+    axs[0].set_xlabel('X координата')
+    axs[0].set_ylabel('Y координата')
+    axs[0].set_title('Траектории дрона')
+    axs[0].legend()
+    axs[0].grid(True)
+    axs[0].axis('equal')  # Чтобы масштаб по осям был одинаковым
 
-    # Настраиваем график
-    plt.xlabel('X координата')
-    plt.ylabel('Y координата')
-    plt.title('Траектории дрона')  # Общее название
-    plt.legend()
-    plt.grid(True)
+    # График RMSE
+    axs[1].plot(range(1, len(rmse_values) + 1), rmse_values, label='RMSE', color='purple')
+    axs[1].set_xlabel('Номер итерации')
+    axs[1].set_ylabel('RMSE')
+    axs[1].set_title('Среднеквадратичное отклонение (RMSE) от итерации')
+    axs[1].legend()
+    axs[1].grid(True)
 
-    # Отображаем график
-    plt.tight_layout() # Важно, чтобы надписи не накладывались
+    plt.tight_layout()  # Предотвращает перекрывание графиков
     plt.show()
